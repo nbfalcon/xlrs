@@ -101,51 +101,100 @@ llcc68_hal_status_t llcc68_hal_wakeup(const void *context)
             return;                     \
         }                               \
     } while (0)
+#define ECK2(x)                         \
+    do                                  \
+    {                                   \
+        llcc68_status_t result = (x);   \
+        if (result != LLCC68_STATUS_OK) \
+        {                               \
+            printf(#x " failed!\r\n");  \
+            return false;               \
+        }                               \
+    } while (0)
 
 static void IRAM_ATTR dio1_interrupt_handler(void *arg)
 {
     llc68_module *driver = (llc68_module *)arg;
 
-    xTaskNotifyGiveIndexed(driver->blocked_task, 0);
+    // Assume the pin may glitch around during RESET, so we discard those IRQs
+    if (driver->blocked_task != NULL)
+    {
+        xTaskNotifyGiveIndexed(driver->blocked_task, 0);
+    }
 }
 
-void llc68_init(llc68_module *driver, const llc68_config *config)
+static void init_wait_for_interrupt(llc68_module *driver)
 {
     driver->blocked_task = xTaskGetCurrentTaskHandle();
+}
 
-    ESP_ERROR_CHECK(gpio_set_direction(config->gpio_reset, GPIO_MODE_OUTPUT));
-    ESP_ERROR_CHECK(gpio_set_level(config->gpio_reset, 1));
-    ESP_ERROR_CHECK(gpio_set_level(config->gpio_reset, 0));
-    esp_rom_delay_us(100);
-    ESP_ERROR_CHECK(gpio_set_level(config->gpio_reset, 1));
+static bool wait_for_interrupt(llc68_module *driver, uint16_t irq_mask, uint16_t timeout_ms)
+{
+    // We assume a well-behaved device that does not generate spurious interrupts, so the next one that comes must be right
+    // We can't have both an RX+TX interrupt
+    uint32_t result = ulTaskNotifyTakeIndexed(0, pdTRUE, timeout_ms);
+    if (result == 0)
+    {
+        printf("No IRQ. Something is wrong...");
+        // Timeout
+        return false;
+    }
+    llcc68_irq_mask_t irq;
+    llcc68_get_and_clear_irq_status(driver, &irq);
+    return irq & irq_mask; // Did we get RX_DONE/TX_DONE or just TIMEOUT?
+}
 
+void llc68_init_spi_bus(llc68_spi_bus_config *config)
+{
     spi_bus_config_t bus = {
         .miso_io_num = config->spi_miso,
         .mosi_io_num = config->spi_mosi,
         .sclk_io_num = config->spi_sclk,
         .max_transfer_sz = 0, // Use default for DMA (4092Bytes)
     };
+    ESP_ERROR_CHECK(spi_bus_initialize(config->spi_host, &bus, SPI_DMA_CH_AUTO));
+}
+
+void llc68_do_reset_pulse(int gpio_reset)
+{
+    // Doing this multiple times won't hurt
+    ESP_ERROR_CHECK(gpio_set_direction(gpio_reset, GPIO_MODE_OUTPUT));
+    ESP_ERROR_CHECK(gpio_set_level(gpio_reset, 1));
+    esp_rom_delay_us(200);
+    ESP_ERROR_CHECK(gpio_set_level(gpio_reset, 0));
+    esp_rom_delay_us(100);
+    ESP_ERROR_CHECK(gpio_set_level(gpio_reset, 1));
+}
+
+void llc68_init(llc68_module *driver, const llc68_config *config)
+{
+    driver->blocked_task = NULL;
+
+    if (config->gpio_reset != -1)
+    {
+        llc68_do_reset_pulse(config->gpio_reset);
+    }
+
+    // The bus is already initialized by this pint
     spi_device_interface_config_t dev = {
         .mode = 0,
         .clock_source = SPI_CLK_SRC_DEFAULT,
         .spics_io_num = config->spi_nss,
         .clock_speed_hz = 1000000, // 1MHz, it doesn't really matter
-        .queue_size = 2,           // We can have request+response
+        .queue_size = 2,           // We can have request+response (see do_spi_tx)
         .command_bits = 0,
         .address_bits = 0,
         .dummy_bits = 0,
         .cs_ena_pretrans = 16,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(config->spi_host, &bus, SPI_DMA_CH_AUTO));
-    ESP_ERROR_CHECK(spi_bus_add_device(config->spi_host, &dev, &driver->spi_handle));
+    ESP_ERROR_CHECK(spi_bus_add_device(config->config->spi_host, &dev, &driver->spi_handle));
 
     // ESP_ERROR_CHECK(gpio_set_direction(config->gpio_busy, GPIO_MODE_INPUT));
     // ESP_ERROR_CHECK(gpio_set_intr_type(config->gpio_busy, GPIO_INTR_NEGEDGE));
 
-    // ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1));
-    // ESP_ERROR_CHECK(gpio_set_direction(config->gpio_dio1, GPIO_MODE_INPUT));
-    // ESP_ERROR_CHECK(gpio_set_intr_type(config->gpio_dio1, GPIO_INTR_POSEDGE));
-    // ESP_ERROR_CHECK(gpio_isr_handler_add(config->gpio_dio1, &dio1_interrupt_handler, driver));
+    ESP_ERROR_CHECK(gpio_set_direction(config->gpio_dio1, GPIO_MODE_INPUT));
+    ESP_ERROR_CHECK(gpio_set_intr_type(config->gpio_dio1, GPIO_INTR_POSEDGE));
+    ESP_ERROR_CHECK(gpio_isr_handler_add(config->gpio_dio1, &dio1_interrupt_handler, driver));
 
     vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -213,30 +262,33 @@ void llc68_send(llc68_module *driver, uint8_t buffer[], size_t size)
 
     ECK(llcc68_set_lora_sync_word(driver, 0x34));
 
+    init_wait_for_interrupt(driver);
+
     // 12. Transmit
     ECK(llcc68_set_tx(driver, 1000));
 
-    // 13. Wait for IRQ
-    // ulTaskNotifyTakeIndexed(0, pdTRUE, portMAX_DELAY);
-
-    // 14. Clear IRQ status
-    ECK(llcc68_clear_irq_status(driver, LLCC68_IRQ_TX_DONE));
+    // 13. Wait for interrupt and 14. Clear interrupt status;
+    bool success = wait_for_interrupt(driver, LLCC68_IRQ_TX_DONE, 1000);
+    if (success)
+    {
+        printf("Success!! \r\n");
+    }
 }
 
-void llc68_recv(llc68_module *driver, uint8_t buffer[], size_t size, uint32_t timeout_in_ms)
+bool llc68_recv(llc68_module *driver, uint8_t buffer[], size_t size, uint32_t timeout_in_ms)
 {
-    ECK(llcc68_set_standby(driver, LLCC68_STANDBY_CFG_RC));
-    ECK(llcc68_set_pkt_type(driver, LLCC68_PKT_TYPE_LORA));
-    ECK(llcc68_set_rf_freq(driver, 433000000));
-    ECK(llcc68_set_buffer_base_address(driver, 0, 0));
+    ECK2(llcc68_set_standby(driver, LLCC68_STANDBY_CFG_RC));
+    ECK2(llcc68_set_pkt_type(driver, LLCC68_PKT_TYPE_LORA));
+    ECK2(llcc68_set_rf_freq(driver, 433000000));
+    ECK2(llcc68_set_buffer_base_address(driver, 0, 0));
 
     llcc68_mod_params_lora_t mod_params = {
-        .sf = LLCC68_LORA_SF5,
-        .bw = LLCC68_GFSK_BW_467000,
+        .sf = LLCC68_LORA_SF7,
+        .bw = LLCC68_LORA_BW_125,
         .ldro = 0,
         .cr = LLCC68_LORA_CR_4_8,
     };
-    ECK(llcc68_set_lora_mod_params(driver, &mod_params));
+    ECK2(llcc68_set_lora_mod_params(driver, &mod_params));
 
     llcc68_pkt_params_lora_t pkt_params = {
         .crc_is_on = 1,
@@ -245,15 +297,20 @@ void llc68_recv(llc68_module *driver, uint8_t buffer[], size_t size, uint32_t ti
         .pld_len_in_bytes = size,
         .preamble_len_in_symb = 16,
     };
-    ECK(llcc68_set_lora_pkt_params(driver, &pkt_params));
+    ECK2(llcc68_set_lora_pkt_params(driver, &pkt_params));
 
-    ECK(llcc68_set_dio_irq_params(driver, LLCC68_IRQ_TIMEOUT | LLCC68_IRQ_RX_DONE, LLCC68_IRQ_TIMEOUT | LLCC68_IRQ_RX_DONE, 0, 0));
-    ECK(llcc68_set_lora_sync_word(driver, 0x34));
-    ECK(llcc68_set_rx(driver, 1000));
+    ECK2(llcc68_set_dio_irq_params(driver, LLCC68_IRQ_TIMEOUT | LLCC68_IRQ_RX_DONE, LLCC68_IRQ_TIMEOUT | LLCC68_IRQ_RX_DONE, 0, 0));
+    ECK2(llcc68_set_lora_sync_word(driver, 0x34));
+    ECK2(llcc68_cfg_rx_boosted(driver, true));
+    ECK2(llcc68_set_rx(driver, 1000));
 
-    ECK(llcc68_cfg_rx_boosted(driver, true));
-    ECK(llcc68_set_rx(driver, timeout_in_ms));
-    ECK(llcc68_read_buffer(driver, 0, buffer, size));
+    // FIXME: handle CRCERR (CRC checksum was off); we must not get that
+    bool success = wait_for_interrupt(driver, LLCC68_IRQ_RX_DONE, 1000);
 
-    // FIXME IRQ
+    if (success)
+    {
+        ECK2(llcc68_read_buffer(driver, 0, buffer, size));
+    }
+
+    return success;
 }
