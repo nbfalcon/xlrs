@@ -4,20 +4,20 @@
 typedef struct {
     spi_device_handle_t spi_handle;
 
-    volatile TaskHandle_t task_blocked_on_dio;
+    TaskHandle_t blocked_task;
+    int gpio_busy;
 } llc68_module;
 
 typedef struct {
-    // We only use one, for simplicity
-    int gpio_dio1;
-    int gpio_busy;
-
-    int spi_nss;
+    int spi_host;
     int spi_mosi;
     int spi_miso;
     int spi_sclk;
+    int spi_nss;
 
-    int spi_host;
+    int gpio_busy;
+    int gpio_dio1;
+    int gpio_reset;
 } llc68_config;
 
 void llc68_init(llc68_module *driver, const llc68_config *config);

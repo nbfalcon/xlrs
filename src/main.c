@@ -4,23 +4,28 @@
 #include "llcc68.h"
 #include "lora/llc68_idf.h"
 
-void llcc68_tx_thread(void *arg) {
+void llcc68_tx_thread(void *arg)
+{
     llc68_module driver = {0};
     llc68_config config = {
-        .gpio_dio1 = 4,
         .spi_host = SPI2_HOST,
+        .spi_mosi = 4,
         .spi_miso = 5,
-        .spi_mosi = 6,
-        .spi_sclk = 7,
-        .spi_nss = 9,
-        .gpio_busy = 10,
-    };
-    llc68_init(&driver, &config);
+        .spi_sclk = 6,
+        .spi_nss = 7,
 
-    while (true) {
+        .gpio_busy = 2,
+        .gpio_dio1 = 3,
+        .gpio_reset = 9,
+    };
+
+    llc68_init(&driver, &config);
+    while (true)
+    {
+        printf("LOOP ITER\r\n");
         uint8_t buffer[] = "HELLO";
         llc68_send(&driver, buffer, sizeof buffer);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(2500));
     }
 }
 
@@ -54,5 +59,5 @@ void app_main()
 {
     TaskHandle_t tx_thread_h;
     xTaskCreate(llcc68_tx_thread, "llcc68_tx", 8000, NULL, tskIDLE_PRIORITY, &tx_thread_h);
-    // xTaskCreate(ws2812_thread, "ws2812", 8000, NULL, 16, ws2812_thread);
+    // xTaskCreate(ws2812_thread, "ws2812", 8000, NULL, 16, &tx_thread_h);
 }

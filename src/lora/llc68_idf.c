@@ -4,89 +4,80 @@
 #include <driver/gpio.h>
 #include <driver/spi_master.h>
 
-static bool wait_for_busy(llc68_module *driver, uint32_t timeout_ms);
+llcc68_hal_status_t do_spi_tx(llc68_module *driver,
+                              uint16_t command_length, const uint8_t *command, const uint16_t data_length, const uint8_t *data,
+                              uint8_t *rx_data_result)
+{
+    bool have_data = data_length != 0;
+    spi_transaction_t cmd_tx = {0}, data_tx = {0};
 
-static uint8_t TX_NOPS[256] = {};
+    ESP_ERROR_CHECK(spi_device_acquire_bus(driver->spi_handle, portMAX_DELAY));
+    if (command_length == 1)
+    {
+        // We still want a status for one-byte commands, so we actually need 2
+        cmd_tx.tx_data[0] = command[0];
+        cmd_tx.length = 2 * 8;
+        cmd_tx.rxlength = 2 * 8; // RFU + STATUS
+        cmd_tx.flags = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA | (have_data ? SPI_TRANS_CS_KEEP_ACTIVE : 0);
+
+        ESP_ERROR_CHECK(spi_device_queue_trans(driver->spi_handle, &cmd_tx, portMAX_DELAY));
+    }
+    else
+    {
+        cmd_tx.tx_buffer = command;
+        cmd_tx.length = command_length * 8;
+        cmd_tx.rxlength = 2 * 8; // RFU + STATUS
+        cmd_tx.flags = SPI_TRANS_USE_RXDATA | (have_data ? SPI_TRANS_CS_KEEP_ACTIVE : 0);
+
+        ESP_ERROR_CHECK(spi_device_queue_trans(driver->spi_handle, &cmd_tx, portMAX_DELAY));
+    }
+
+    if (have_data)
+    {
+        data_tx.tx_buffer = data;
+        data_tx.length = data_length * 8;
+        if (rx_data_result != NULL)
+        {
+            data_tx.rx_buffer = rx_data_result;
+            data_tx.rxlength = data_length * 8;
+        }
+
+        ESP_ERROR_CHECK(spi_device_queue_trans(driver->spi_handle, &data_tx, portMAX_DELAY));
+    }
+
+    spi_transaction_t *cmd_tx_result = NULL;
+    ESP_ERROR_CHECK(spi_device_get_trans_result(driver->spi_handle, &cmd_tx_result, portMAX_DELAY));
+    if (have_data)
+    {
+        spi_transaction_t *wait_for_tx2 = NULL;
+        ESP_ERROR_CHECK(spi_device_get_trans_result(driver->spi_handle, &wait_for_tx2, portMAX_DELAY));
+    }
+    spi_device_release_bus(driver->spi_handle);
+
+    uint8_t status_byte = cmd_tx_result->rx_data[1];
+    uint8_t cmd_status = (status_byte >> 1) & 0b111;
+    if (cmd_status == 0x3 || cmd_status == 0x4 || cmd_status == 0x5)
+    {
+        return LLCC68_HAL_STATUS_ERROR;
+    }
+    else
+    {
+        return LLCC68_HAL_STATUS_OK;
+    }
+}
 
 llcc68_hal_status_t llcc68_hal_write(const void *context, const uint8_t *command, uint16_t command_length, const uint8_t *data, const uint16_t data_length)
 {
     llc68_module *driver = (llc68_module *)context;
 
-    llcc68_hal_status_t result = LLCC68_STATUS_OK;
-
-    // DMA writes 4-bytes at a time
-    uint32_t dma_rx = 0, dma_tx = 0;
-
-    if (data_length == 0)
-    {
-        if (command_length == 1)
-        {
-            ((uint8_t *)dma_tx)[0] = command[0];
-            ((uint8_t *)dma_tx)[1] = 0;
-            command = (uint8_t *)dma_tx;
-            command_length = 2;
-        }
-
-        spi_transaction_t tx_cmd = {
-            .length = command_length * 8,
-            .tx_buffer = command,
-            // We get an RFU followed by a STATUS byte
-            .rx_buffer = &dma_rx,
-            .rxlength = 2 * 8,
-        };
-        ESP_ERROR_CHECK(spi_device_transmit(driver->spi_handle, &tx_cmd));
-
-        uint8_t status_byte = ((uint8_t *)dma_rx)[1];
-        uint8_t command_status = (status_byte >> 1) & 0b111;
-        if (command_status == 0x3 || command_status == 0x4 || command_status == 0x5) {
-            result = LLCC68_HAL_STATUS_ERROR;
-        }
-    }
-    else
-    {
-        ESP_ERROR_CHECK(spi_device_acquire_bus(driver->spi_handle, portMAX_DELAY));
-
-        spi_transaction_t tx_cmd = {
-            .length = command_length * 8,
-            .tx_buffer = command,
-            .flags = SPI_TRANS_CS_KEEP_ACTIVE,
-        };
-        ESP_ERROR_CHECK(spi_device_transmit(driver->spi_handle, &tx_cmd));
-        spi_transaction_t tx_addr = {
-            .length = data_length * 8,
-            .tx_buffer = data,
-        };
-        ESP_ERROR_CHECK(spi_device_transmit(driver->spi_handle, &tx_addr));
-
-        spi_device_release_bus(driver->spi_handle);
-    }
-    return LLCC68_STATUS_OK;
+    return do_spi_tx(driver, command_length, command, data_length, data, NULL);
 }
 
 llcc68_hal_status_t llcc68_hal_read(const void *context, const uint8_t *command, const uint16_t command_length, uint8_t *data, const uint16_t data_length)
 {
     llc68_module *driver = (llc68_module *)context;
 
-    ESP_ERROR_CHECK(spi_device_acquire_bus(driver->spi_handle, portMAX_DELAY));
-
-    spi_transaction_t tx_cmd = {
-        .length = command_length * 8,
-        .tx_buffer = command,
-        .flags = SPI_TRANS_CS_KEEP_ACTIVE,
-    };
-    ESP_ERROR_CHECK(spi_device_transmit(driver->spi_handle, &tx_cmd));
-
-    spi_transaction_t read_bytes = {
-        .length = data_length * 8,
-        .tx_buffer = TX_NOPS,
-        .rxlength = data_length * 8,
-        .rx_buffer = data,
-    };
-    ESP_ERROR_CHECK(spi_device_transmit(driver->spi_handle, &read_bytes));
-
-    spi_device_release_bus(driver->spi_handle);
-
-    return LLCC68_STATUS_OK;
+    return do_spi_tx(driver, command_length, command, data_length, NULL, data);
 }
 
 // We dont actually need these functions, since they are called only trough direct wrappers
@@ -106,65 +97,27 @@ llcc68_hal_status_t llcc68_hal_wakeup(const void *context)
         llcc68_status_t result = (x);   \
         if (result != LLCC68_STATUS_OK) \
         {                               \
-            printf(#x " failed!\r\n");      \
+            printf(#x " failed!\r\n");  \
             return;                     \
         }                               \
     } while (0)
 
-IRAM_ATTR static void dio1_interrupt_handler(void *context)
+static void IRAM_ATTR dio1_interrupt_handler(void *arg)
 {
-    llc68_module *driver = (llc68_module *)context;
+    llc68_module *driver = (llc68_module *)arg;
 
-    TaskHandle_t blockee = driver->task_blocked_on_dio;
-    if (blockee != NULL)
-    {
-        BaseType_t highPrioWoken = pdFALSE;
-        vTaskNotifyGiveIndexedFromISR(blockee, 0, &highPrioWoken);
-    }
-}
-
-IRAM_ATTR static void busy_interrupt_handler(void *context)
-{
-    llc68_module *driver = (llc68_module *)context;
-
-    TaskHandle_t blockee = driver->task_blocked_on_dio;
-    if (blockee != NULL)
-    {
-        BaseType_t highPrioWoken = pdFALSE;
-        vTaskNotifyGiveIndexedFromISR(blockee, 1, &highPrioWoken);
-    }
-}
-
-static bool wait_for_irq(llc68_module *driver, uint32_t timeout_ms)
-{
-    bool result = ulTaskNotifyTakeIndexed(0, pdFALSE, pdMS_TO_TICKS(timeout_ms)) == 1;
-    if (!result)
-    {
-        printf("ulTaskNotify timeout\r\n");
-    }
-    else
-    {
-        printf("TX/RX done\r\n");
-    }
-    return result;
-}
-
-static bool wait_for_busy(llc68_module *driver, uint32_t timeout_ms)
-{
-    for (int i = 0; i < 10000; i++)
-    {
-        if (!gpio_get_level(10))
-            break;
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    return true;
+    xTaskNotifyGiveIndexed(driver->blocked_task, 0);
 }
 
 void llc68_init(llc68_module *driver, const llc68_config *config)
 {
-    // FIXME: should we change this? Probably in each call to llc68_send; then again, we don't support
-    // multithreading anyway
-    driver->task_blocked_on_dio = xTaskGetCurrentTaskHandle();
+    driver->blocked_task = xTaskGetCurrentTaskHandle();
+
+    ESP_ERROR_CHECK(gpio_set_direction(config->gpio_reset, GPIO_MODE_OUTPUT));
+    ESP_ERROR_CHECK(gpio_set_level(config->gpio_reset, 1));
+    ESP_ERROR_CHECK(gpio_set_level(config->gpio_reset, 0));
+    esp_rom_delay_us(100);
+    ESP_ERROR_CHECK(gpio_set_level(config->gpio_reset, 1));
 
     spi_bus_config_t bus = {
         .miso_io_num = config->spi_miso,
@@ -177,33 +130,50 @@ void llc68_init(llc68_module *driver, const llc68_config *config)
         .clock_source = SPI_CLK_SRC_DEFAULT,
         .spics_io_num = config->spi_nss,
         .clock_speed_hz = 1000000, // 1MHz, it doesn't really matter
-        .queue_size = 1,
+        .queue_size = 2,           // We can have request+response
         .command_bits = 0,
         .address_bits = 0,
         .dummy_bits = 0,
-        .cs_ena_pretrans = 1,
+        .cs_ena_pretrans = 16,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(config->spi_host, &bus, SPI_DMA_CH_AUTO));
     ESP_ERROR_CHECK(spi_bus_add_device(config->spi_host, &dev, &driver->spi_handle));
 
-    // No one needs efficiency xD
-    ECK(llcc68_set_reg_mode(driver, LLCC68_REG_MODE_LDO));
+    // ESP_ERROR_CHECK(gpio_set_direction(config->gpio_busy, GPIO_MODE_INPUT));
+    // ESP_ERROR_CHECK(gpio_set_intr_type(config->gpio_busy, GPIO_INTR_NEGEDGE));
 
-    ECK(llcc68_set_dio_irq_params(driver, LLCC68_IRQ_TX_DONE | LLCC68_IRQ_RX_DONE,
-                                  LLCC68_IRQ_ALL, 0, 0));
-    ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1));
-    ESP_ERROR_CHECK(gpio_set_direction(config->gpio_dio1, GPIO_MODE_INPUT));
-    ESP_ERROR_CHECK(gpio_set_intr_type(config->gpio_dio1, GPIO_INTR_POSEDGE));
-    ESP_ERROR_CHECK(gpio_isr_handler_add(config->gpio_dio1, &dio1_interrupt_handler, driver));
+    // ESP_ERROR_CHECK(gpio_install_isr_service(ESP_INTR_FLAG_LEVEL1));
+    // ESP_ERROR_CHECK(gpio_set_direction(config->gpio_dio1, GPIO_MODE_INPUT));
+    // ESP_ERROR_CHECK(gpio_set_intr_type(config->gpio_dio1, GPIO_INTR_POSEDGE));
+    // ESP_ERROR_CHECK(gpio_isr_handler_add(config->gpio_dio1, &dio1_interrupt_handler, driver));
 
-    ESP_ERROR_CHECK(gpio_set_direction(config->gpio_busy, GPIO_MODE_INPUT));
-    ESP_ERROR_CHECK(gpio_set_intr_type(config->gpio_busy, GPIO_INTR_NEGEDGE));
+    vTaskDelay(pdMS_TO_TICKS(100));
 
-        // See page 94 of https://www.mouser.com/pdfDocs/DS_LLCC68_V10-2.pdf
+    ECK(llcc68_set_reg_mode(driver, LLCC68_REG_MODE_DCDC));
+}
+
+void llc68_send(llc68_module *driver, uint8_t buffer[], size_t size)
+{
+    // See page 94 of https://www.mouser.com/pdfDocs/DS_LLCC68_V10-2.pdf
     // 1. Set STDBY_RC
-    ECK(llcc68_set_standby(driver, LLCC68_STANDBY_CFG_RC));
-    ECK(llcc68_set_pkt_type(driver, LLCC68_PKT_TYPE_LORA));
 
+    llcc68_chip_status_t status;
+    // Dont error check; the whole point is that we get the status
+    llcc68_get_status(driver, &status);
+    if (status.cmd_status == 0x2)
+    {
+        WORD_ALIGNED_ATTR uint8_t buffer[256];
+        llcc68_read_buffer(driver, 0, buffer, 255);
+        printf("%2x%2x%2x%2x; ", buffer[0], buffer[1], buffer[2], buffer[3]);
+        static uint8_t zeros[256];
+        llcc68_write_buffer(driver, 0, zeros, 255);
+    }
+    llcc68_irq_mask_t irq;
+    llcc68_get_irq_status(driver, &irq);
+    printf("%2x:%2x | %x:%2x ", status.chip_mode, status.cmd_status, irq, irq & LLCC68_IRQ_TX_DONE);
+    llcc68_clear_irq_status(driver, LLCC68_IRQ_ALL);
+
+    ECK(llcc68_set_pkt_type(driver, LLCC68_PKT_TYPE_LORA));
     ECK(llcc68_set_rf_freq(driver, 433050000));
 
     // "+22dbm" configuration. DO NOT USE in JAPAN.
@@ -218,25 +188,16 @@ void llc68_init(llc68_module *driver, const llc68_config *config)
     // FIXME: ramp time?! I guess the higher the better, since we get less of a "high frequency" load
     ECK(llcc68_set_tx_params(driver, 22, LLCC68_RAMP_800_US));
 
+    ECK(llcc68_set_buffer_base_address(driver, 0, 0));
+    ECK(llcc68_write_buffer(driver, 0, buffer, size));
+
     llcc68_mod_params_lora_t mod_params = {
-        .sf = LLCC68_LORA_SF5,
-        .bw = LLCC68_GFSK_BW_467000,
+        .sf = LLCC68_LORA_SF7,
+        .bw = LLCC68_LORA_BW_125,
         .ldro = 0,
         .cr = LLCC68_LORA_CR_4_8,
     };
-    llcc68_set_lora_mod_params(driver, &mod_params);
-
-    // 10. Skip; we already did this in _init
-
-    ECK(llcc68_set_lora_sync_word(driver, 0x34));
-
-    vTaskDelay(pdMS_TO_TICKS(2000));
-}
-
-void llc68_send(llc68_module *driver, uint8_t buffer[], size_t size)
-{
-    ECK(llcc68_set_buffer_base_address(driver, 0, 0));
-    ECK(llcc68_write_buffer(driver, 0, buffer, size));
+    ECK(llcc68_set_lora_mod_params(driver, &mod_params));
 
     // 9. Define the frame format
     llcc68_pkt_params_lora_t pkt_params = {
@@ -248,16 +209,51 @@ void llc68_send(llc68_module *driver, uint8_t buffer[], size_t size)
     };
     ECK(llcc68_set_lora_pkt_params(driver, &pkt_params));
 
+    ECK(llcc68_set_dio_irq_params(driver, LLCC68_IRQ_ALL, LLCC68_IRQ_ALL, 0, 0));
+
+    ECK(llcc68_set_lora_sync_word(driver, 0x34));
+
     // 12. Transmit
-    // FIXME: the timeotus are off
-    llcc68_set_tx(driver, 500);
+    ECK(llcc68_set_tx(driver, 1000));
+
+    // 13. Wait for IRQ
+    // ulTaskNotifyTakeIndexed(0, pdTRUE, portMAX_DELAY);
+
     // 14. Clear IRQ status
-    // ECK(llcc68_clear_irq_status(driver, LLCC68_IRQ_TX_DONE));
+    ECK(llcc68_clear_irq_status(driver, LLCC68_IRQ_TX_DONE));
 }
 
 void llc68_recv(llc68_module *driver, uint8_t buffer[], size_t size, uint32_t timeout_in_ms)
 {
+    ECK(llcc68_set_standby(driver, LLCC68_STANDBY_CFG_RC));
+    ECK(llcc68_set_pkt_type(driver, LLCC68_PKT_TYPE_LORA));
+    ECK(llcc68_set_rf_freq(driver, 433000000));
+    ECK(llcc68_set_buffer_base_address(driver, 0, 0));
+
+    llcc68_mod_params_lora_t mod_params = {
+        .sf = LLCC68_LORA_SF5,
+        .bw = LLCC68_GFSK_BW_467000,
+        .ldro = 0,
+        .cr = LLCC68_LORA_CR_4_8,
+    };
+    ECK(llcc68_set_lora_mod_params(driver, &mod_params));
+
+    llcc68_pkt_params_lora_t pkt_params = {
+        .crc_is_on = 1,
+        .header_type = LLCC68_LORA_PKT_EXPLICIT,
+        .invert_iq_is_on = false,
+        .pld_len_in_bytes = size,
+        .preamble_len_in_symb = 16,
+    };
+    ECK(llcc68_set_lora_pkt_params(driver, &pkt_params));
+
+    ECK(llcc68_set_dio_irq_params(driver, LLCC68_IRQ_TIMEOUT | LLCC68_IRQ_RX_DONE, LLCC68_IRQ_TIMEOUT | LLCC68_IRQ_RX_DONE, 0, 0));
+    ECK(llcc68_set_lora_sync_word(driver, 0x34));
+    ECK(llcc68_set_rx(driver, 1000));
+
     ECK(llcc68_cfg_rx_boosted(driver, true));
     ECK(llcc68_set_rx(driver, timeout_in_ms));
     ECK(llcc68_read_buffer(driver, 0, buffer, size));
+
+    // FIXME IRQ
 }
