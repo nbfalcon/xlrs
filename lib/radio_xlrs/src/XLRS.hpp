@@ -40,7 +40,7 @@ namespace radio::xlrs
 
         RadioDelegate *radio = nullptr;
         XLRSSignalsDelegate *signals = nullptr;
-
+        
     public:
         XLRSConnection(RadioDelegate *radio)
             : radio(radio) {}

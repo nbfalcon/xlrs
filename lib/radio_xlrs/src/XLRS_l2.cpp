@@ -3,6 +3,7 @@
 #include <mbedtls/aes.h>
 #include <mbedtls/cmac.h>
 #include <mbedtls/constant_time.h>
+#include "XLRS_mbedtls_util.hpp"
 
 namespace radio::xlrs
 {
@@ -24,8 +25,7 @@ namespace radio::xlrs
         uint8_t msgbuf[256];
 
         // Encrypt
-        mbedtls_aes_context ctx_enc;
-        mbedtls_aes_init(&ctx_enc);
+        MbedtlsAesContext ctx_enc;
         mbedtls_aes_setkey_enc(&ctx_enc, sessionKey, 128);
 
         size_t offset = 0;
@@ -45,8 +45,6 @@ namespace radio::xlrs
         header.nonce = nonce;
         memcpy(&header.mic, cmac_buf + 12, sizeof(header.mic));
         memcpy(msgbuf, &header, sizeof(header));
-
-        mbedtls_aes_free(&ctx_enc);
 
         // Send
         radio->sendPacket(msgbuf, length + sizeof(L2Header));
@@ -82,16 +80,13 @@ namespace radio::xlrs
             return -3;
         }
 
-        mbedtls_aes_context ctx_enc;
-        mbedtls_aes_init(&ctx_enc);
+        MbedtlsAesContext ctx_enc;
         mbedtls_aes_setkey_enc(&ctx_enc, sessionKey, 128);
 
         size_t offset = 0;
         unsigned char stream_block[16];
         unsigned char nonce_bytes[16] = {0};
         mbedtls_aes_crypt_ctr(&ctx_enc, ciphertext_length, &offset, nonce_bytes, stream_block, ciphertext, buf);
-
-        mbedtls_aes_free(&ctx_enc);
 
         return ciphertext_length;
     }

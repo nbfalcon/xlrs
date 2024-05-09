@@ -1,5 +1,7 @@
 #include "XLRS.hpp"
+#include "XLRS_mbedtls_util.hpp"
 
+#include <assert.h>
 #include <string.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/constant_time.h>
@@ -83,12 +85,9 @@ namespace radio::xlrs
         AES128Key nonce1_sk;
         esp_fill_random(&nonce1_sk, sizeof(nonce1_sk));
 
-        // FIXME: we obviously have to free this context...
-        mbedtls_aes_context ctx_enc;
-        mbedtls_aes_init(&ctx_enc);
+        MbedtlsAesContext ctx_enc;
+        MbedtlsAesContext ctx_dec;
         mbedtls_aes_setkey_enc(&ctx_enc, pairingKey, 128);
-        mbedtls_aes_context ctx_dec;
-        mbedtls_aes_init(&ctx_dec);
         mbedtls_aes_setkey_dec(&ctx_dec, pairingKey, 128);
 
         // Phase 1: sent connection hello1
@@ -160,12 +159,9 @@ namespace radio::xlrs
         AES128Key nonce2;
         esp_fill_random(&nonce2, sizeof(nonce2));
 
-        // FIXME: we obviously have to free this context...
-        mbedtls_aes_context ctx_enc;
-        mbedtls_aes_init(&ctx_enc);
+        MbedtlsAesContext ctx_enc;
+        MbedtlsAesContext ctx_dec;
         mbedtls_aes_setkey_enc(&ctx_enc, pairingKey, 128);
-        mbedtls_aes_context ctx_dec;
-        mbedtls_aes_init(&ctx_dec);
         mbedtls_aes_setkey_dec(&ctx_dec, pairingKey, 128);
 
         // Phase 1: receive hello1
