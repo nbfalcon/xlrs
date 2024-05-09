@@ -51,8 +51,18 @@ namespace radio::xlrs
             memcpy(this->pairingKey, pairingKey, sizeof(this->pairingKey));
         }
 
+#ifdef XLRS_TARGET_MOCK
+        void setSK(const AES128Key sessionKey)
+        {
+            memcpy(this->sessionKey, sessionKey, sizeof(this->sessionKey));
+        }
+#endif
+
         // Request to connect to a receiver; it must be running the "respondConnect" protocol
         bool requestConnect();
         bool respondConnect();
+
+        void sendL2Message(const uint8_t buf[], size_t length);
+        ssize_t receiveL2Message(uint8_t buf[], size_t length);
     };
 }

@@ -24,10 +24,13 @@ void test_queue()
     TEST_ASSERT_EQUAL(queue1.pop(), 2);
 }
 
+void test_mbedtls_works()
+{
+    TEST_ASSERT_EQUAL(0, mbedtls_aes_self_test(1));
+}
+
 void test_connect()
 {
-    TEST_ASSERT_EQUAL(mbedtls_aes_self_test(1), 0);
-
     auto t_req = std::async([]()
                             {
         MockRadioDelegate radio(false);
@@ -47,11 +50,35 @@ void test_connect()
     TEST_ASSERT_TRUE(t_res.get());
 }
 
+void test_l2()
+{
+    auto t_req = std::async([]()
+                            {
+        MockRadioDelegate radio(false);
+        XLRSConnection conn(static_cast<RadioDelegate *>(&radio));
+        conn.setSK(test_pairing_key);
+
+        conn.sendL2Message((const uint8_t *)"Hello", strlen("Hello")); });
+    auto t_res = std::async([]()
+                            {
+        MockRadioDelegate radio(true);
+        XLRSConnection conn(static_cast<RadioDelegate *>(&radio));
+        conn.setSK(test_pairing_key);
+
+        uint8_t buf[256] = {0};
+        TEST_ASSERT_EQUAL(strlen("Hello"), conn.receiveL2Message(buf, 256));
+        TEST_ASSERT_EQUAL(0, strcmp((const char *)buf, "Hello")); });
+    t_req.wait();
+    t_res.wait();
+}
+
 int main(int argc, char **argv)
 {
     UNITY_BEGIN();
     RUN_TEST(test_queue);
+    RUN_TEST(test_mbedtls_works);
     RUN_TEST(test_connect);
+    RUN_TEST(test_l2);
     UNITY_END();
 
     return 0;

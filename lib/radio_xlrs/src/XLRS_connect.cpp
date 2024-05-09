@@ -83,6 +83,7 @@ namespace radio::xlrs
         AES128Key nonce1_sk;
         esp_fill_random(&nonce1_sk, sizeof(nonce1_sk));
 
+        // FIXME: we obviously have to free this context...
         mbedtls_aes_context ctx_enc;
         mbedtls_aes_init(&ctx_enc);
         mbedtls_aes_setkey_enc(&ctx_enc, pairingKey, 128);
@@ -159,6 +160,7 @@ namespace radio::xlrs
         AES128Key nonce2;
         esp_fill_random(&nonce2, sizeof(nonce2));
 
+        // FIXME: we obviously have to free this context...
         mbedtls_aes_context ctx_enc;
         mbedtls_aes_init(&ctx_enc);
         mbedtls_aes_setkey_enc(&ctx_enc, pairingKey, 128);
