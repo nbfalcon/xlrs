@@ -11,12 +11,6 @@
 #include <esp_random.h>
 #elif XLRS_TARGET_MOCK
 #include <time.h>
-
-// For *some* reason, only this symbol is unavailabe in our hacked-together native platformio build system
-inline int mbedtls_ct_memcmp(const void *a, const void *b, size_t length)
-{
-    return memcmp(a, b, length);
-}
 #endif
 
 static inline uint32_t get_current_time_ms()
@@ -135,7 +129,11 @@ namespace radio::xlrs
             return false;
         }
 
-        // FIXME: timeout accross phase1/2 to prevent replay attacks
+        // FIXME: we need to combine phase1 and phase2, since phase1 could be spoofed by replay. Because of this, the protocol
+        // is susceptible to denial of service, because an attacker could just spam spoofed responses in phase1, which would
+        // deny the receiver for 2s, making connection success unlikely.
+        // The same exploit does not work on the TX side, however, since the TX can immediately discard such packets in phase1,
+        // as they cannot contain it's nonce. At worst, spurious transmissions are generated, which should at worst delay the exchange.
         bool success_phase2 = false;
         LOOP_TIMEOUT(2000)
         {
