@@ -18,7 +18,7 @@ namespace radio::xlrs
 
     enum State
     {
-        PAIRING,
+        INIT,
         CONNECTING,
         CONNECTED
     };
@@ -32,10 +32,10 @@ namespace radio::xlrs
 
     class XLRSConnection
     {
-        AES128Key pairingKey;
-        enum State connectionState;
+        AES128Key pairingKey = {0};
+        enum State connectionState = INIT;
 
-        AES128Key sessionKey;
+        AES128Key sessionKey = {0};
         uint32_t next_nonce = 0;
 
         RadioDelegate *radio = nullptr;

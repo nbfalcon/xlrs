@@ -37,17 +37,17 @@ void test_connect()
         XLRSConnection conn(static_cast<RadioDelegate *>(&radio));
         conn.init(test_pairing_key);
 
-        return conn.requestConnect(); });
+        TEST_ASSERT_TRUE(conn.requestConnect()); });
     auto t_res = std::async([]()
                             {
         MockRadioDelegate radio(true);
         XLRSConnection conn(static_cast<RadioDelegate *>(&radio));
         conn.init(test_pairing_key);
 
-        return conn.respondConnect(); });
+        TEST_ASSERT_TRUE(conn.respondConnect()); });
 
-    TEST_ASSERT_TRUE(t_req.get());
-    TEST_ASSERT_TRUE(t_res.get());
+    t_res.wait();
+    t_req.wait();
 }
 
 void test_l2()
@@ -72,6 +72,31 @@ void test_l2()
     t_res.wait();
 }
 
+void test_connect_and_then_send()
+{
+    auto t_req = std::async([]()
+                            {
+        MockRadioDelegate radio(false);
+        XLRSConnection conn(static_cast<RadioDelegate *>(&radio));
+        conn.init(test_pairing_key);
+
+        TEST_ASSERT_TRUE(conn.requestConnect());
+        conn.sendL2Message((const uint8_t *)"Hello", strlen("Hello")); });
+    auto t_res = std::async([]()
+                            {
+        MockRadioDelegate radio(true);
+        XLRSConnection conn(static_cast<RadioDelegate *>(&radio));
+        conn.init(test_pairing_key);
+
+        TEST_ASSERT_TRUE(conn.respondConnect());
+        uint8_t buf[256] = {0};
+        TEST_ASSERT_EQUAL(strlen("Hello"), conn.receiveL2Message(buf, 256));
+        TEST_ASSERT_EQUAL(0, strcmp((const char *)buf, "Hello")); });
+
+    t_res.wait();
+    t_req.wait();
+}
+
 int main(int argc, char **argv)
 {
     UNITY_BEGIN();
@@ -79,6 +104,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_mbedtls_works);
     RUN_TEST(test_connect);
     RUN_TEST(test_l2);
+    RUN_TEST(test_connect_and_then_send);
     UNITY_END();
 
     return 0;
