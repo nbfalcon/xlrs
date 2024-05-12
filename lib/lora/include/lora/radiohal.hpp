@@ -50,7 +50,7 @@ namespace radiohal
             SF9 = 0x09,
             SF10 = 0x0A,
             SF11 = 0x0B,
-        } sf = SF5;
+        } sf = SF7;
         enum Bandwidth
         {
             BW_500 = 6,
@@ -63,13 +63,11 @@ namespace radiohal
             BW_015 = 1,
             BW_010 = 8,
             BW_007 = 0,
-        } bw = BW_500;
+        } bw = BW_125;
 
         uint8_t syncWord = 0x34;
 
         bool implicitMode = false;
-        // Packet length (in explicit mode)
-        length_type explictLength = 1;
     };
 
     struct PhyConfig

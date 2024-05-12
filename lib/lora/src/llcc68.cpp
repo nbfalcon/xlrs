@@ -5,13 +5,15 @@ extern "C"
 #include "llcc68.h"
 #include "llcc68_hal.h"
 #include "llcc68_regs.h"
-#include "lora/llcc68.hpp"
 }
+#include "lora/llcc68.hpp"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define LORA_EH(x)                           \
     if ((hal_err = (x)) != LLCC68_STATUS_OK) \
     {                                        \
-        LORA_LOG_ERROR(x, hal_err)                \
+        LORA_LOG_ERROR(x, hal_err)           \
         return ERROR;                        \
     }
 #define ERRS                     \
@@ -35,7 +37,7 @@ namespace radiohal::llcc68
         // 9. Define the frame format
         // FIXME: some more configurability
         llcc68_pkt_params_lora_t pkt_params = {
-            .preamble_len_in_symb = 16,
+            .preamble_len_in_symb = 8,
             .header_type = config.implicitMode ? LLCC68_LORA_PKT_IMPLICIT : LLCC68_LORA_PKT_EXPLICIT,
             .pld_len_in_bytes = size,
             .crc_is_on = 1,
@@ -49,10 +51,8 @@ namespace radiohal::llcc68
 
     Result LLCC68Radio::waitForInterrupt(uint16_t irq_mask, timeout timeout_ms)
     {
-        if (!io->waitForInterrupt(timeout_ms))
-        {
-            return TIMEOUT;
-        }
+        // FIXME: clear interrupt at start of recv() and send()
+        io->waitForInterrupt(timeout_ms + 100);
 
         llcc68_irq_mask_t irq;
         llcc68_get_and_clear_irq_status(io, &irq);
@@ -74,8 +74,9 @@ namespace radiohal::llcc68
         ERRS;
 
         LORA_EC(io->reset());
-        LORA_EH(llcc68_set_reg_mode(io, LLCC68_REG_MODE_DCDC));
-        LORA_EH(llcc68_set_dio_irq_params(io, LLCC68_IRQ_ALL, LLCC68_IRQ_ALL, 0, 0));
+        LORA_EH(llcc68_set_reg_mode(io, LLCC68_REG_MODE_LDO));
+        const int which_irqs = LLCC68_IRQ_TX_DONE | LLCC68_IRQ_RX_DONE | LLCC68_IRQ_TIMEOUT;
+        LORA_EH(llcc68_set_dio_irq_params(io, which_irqs, which_irqs, 0, which_irqs));
 
         return OK;
     }
@@ -129,14 +130,18 @@ namespace radiohal::llcc68
     {
         ERRS;
 
-        LORA_EC(halConfigureLora(configLora, *data_size));
+        LORA_EH(llcc68_set_standby(io, LLCC68_STANDBY_CFG_RC));
 
+        LORA_EH(llcc68_set_pkt_type(io, LLCC68_PKT_TYPE_LORA));
+        LORA_EH(llcc68_set_rf_freq(io, 433050000));
         LORA_EH(llcc68_set_buffer_base_address(io, 0, 0));
+
+        LORA_EC(halConfigureLora(configLora, *data_size));
 
         LORA_EH(llcc68_cfg_rx_boosted(io, true));
         io->prepareInterrupt();
         LORA_EH(llcc68_set_rx(io, timeout_ms));
-        LORA_EC(waitForInterrupt(LLCC68_IRQ_RX_DONE, timeout_ms));
+        LORA_EC(waitForInterrupt(LLCC68_IRQ_RX_DONE | LLCC68_IRQ_TIMEOUT, timeout_ms));
 
         llcc68_rx_buffer_status_t rx_status;
         LORA_EH(llcc68_get_rx_buffer_status(io, &rx_status));

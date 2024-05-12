@@ -81,7 +81,9 @@ static Result do_spi_tx(spi_device_handle_t spi_handle,
     uint8_t cmd_status = (status_byte >> 1) & 0b111;
     if (cmd_status == 0x3)
     {
-        return TIMEOUT;
+        // "0x3" is a timeout, but we need it to be "OK", so that a single failed recv does not break everything.
+        // "Timeout" is a sticky status, and does not change until the next non-timeout RQ.
+        return OK;
     }
     else if (cmd_status == 0x4 || cmd_status == 0x5)
     {
@@ -120,6 +122,7 @@ namespace radiohal::esp_idf
         ESPERR(gpio_set_level(gpio_reset, 0));
         esp_rom_delay_us(100);
         ESPERR(gpio_set_level(gpio_reset, 1));
+        vTaskDelay(pdMS_TO_TICKS(2000));
         return ESP_OK;
     }
 

@@ -1,7 +1,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <driver/gpio.h>
-extern "C" {
+extern "C"
+{
 #include "ws2812.h"
 }
 #include "lora/radiohal.hpp"
@@ -39,20 +40,21 @@ esp_idf::SPIIoDelegate init_dev()
     return esp_idf::SPIIoDelegate(dev1);
 }
 
-// void llcc68_rx_thread(void *arg)
-// {
-//     Radio *driver = (Radio *)arg;
+void llcc68_rx_thread(void *arg)
+{
+    Radio *driver = (Radio *)arg;
 
-//     uint8_t buffer[256];
-//     while (true)
-//     {
-//         printf("RX ITER\r\n");
-//         if (llc68_recv(driver, buffer, sizeof buffer, 1000))
-//         {
-//             printf("RECV: %s\r\n", buffer);
-//         }
-//     }
-// }
+    uint8_t buffer[100];
+    while (true)
+    {
+        printf("RX ITER\r\n");
+        radiohal::length_type length = sizeof(buffer);
+        if (driver->recv(&length, buffer, 1000) == radiohal::OK)
+        {
+            printf("RECV: %s\r\n", buffer);
+        }
+    }
+}
 
 void llcc68_tx_thread(void *arg)
 {
