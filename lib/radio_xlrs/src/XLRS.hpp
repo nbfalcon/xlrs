@@ -56,6 +56,10 @@ namespace radio::xlrs
         {
             memcpy(this->sessionKey, sessionKey, sizeof(this->sessionKey));
         }
+
+        AES128Key &getSK() {
+            return this->sessionKey;
+        }
 #endif
 
         // Request to connect to a receiver; it must be running the "respondConnect" protocol
@@ -63,6 +67,6 @@ namespace radio::xlrs
         bool respondConnect();
 
         void sendL2Message(const uint8_t buf[], size_t length);
-        ssize_t receiveL2Message(uint8_t buf[], size_t length);
+        bool receiveL2Message(uint8_t buf[], size_t *length);
     };
 }

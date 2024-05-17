@@ -161,16 +161,12 @@ extern "C"
     {
         radiohal::IODelegate *driver = (radiohal::IODelegate *)context;
         DRV_TO_HAL(driver->transact(command_length, command, data_length, data, 0, NULL) != radiohal::OK);
-
-        return LLCC68_HAL_STATUS_OK;
     }
 
     llcc68_hal_status_t llcc68_hal_read(const void *context, const uint8_t *command, const uint16_t command_length, uint8_t *data, const uint16_t data_length)
     {
         radiohal::IODelegate *driver = (radiohal::IODelegate *)context;
         DRV_TO_HAL(driver->transact(command_length, command, 0, NULL, data_length, data) != radiohal::OK);
-
-        return LLCC68_HAL_STATUS_OK;
     }
 
     // We dont actually need these functions, since they are called only trough direct wrappers
@@ -178,8 +174,6 @@ extern "C"
     {
         radiohal::IODelegate *driver = (radiohal::IODelegate *)context;
         DRV_TO_HAL(driver->reset());
-
-        return LLCC68_HAL_STATUS_OK;
     }
 
     llcc68_hal_status_t llcc68_hal_wakeup(const void *context)

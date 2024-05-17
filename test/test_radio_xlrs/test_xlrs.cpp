@@ -31,23 +31,30 @@ void test_mbedtls_works()
 
 void test_connect()
 {
-    auto t_req = std::async([]()
+    AES128Key sks[2];
+    memset(sks[0], 0, sizeof(AES128Key));
+    memset(sks[1], 1, sizeof(AES128Key));
+    auto t_req = std::async([&]()
                             {
         MockRadioDelegate radio(false);
         XLRSConnection conn(static_cast<RadioDelegate *>(&radio));
         conn.init(test_pairing_key);
 
-        TEST_ASSERT_TRUE(conn.requestConnect()); });
-    auto t_res = std::async([]()
+        TEST_ASSERT_TRUE(conn.requestConnect());
+        memcpy(&sks[0], conn.getSK(), sizeof(AES128Key)); });
+    auto t_res = std::async([&]()
                             {
         MockRadioDelegate radio(true);
         XLRSConnection conn(static_cast<RadioDelegate *>(&radio));
         conn.init(test_pairing_key);
 
-        TEST_ASSERT_TRUE(conn.respondConnect()); });
+        TEST_ASSERT_TRUE(conn.respondConnect());
+        memcpy(&sks[1], conn.getSK(), sizeof(AES128Key)); });
 
     t_res.wait();
     t_req.wait();
+
+    TEST_ASSERT_EQUAL(0, memcmp(&sks[0], &sks[1], sizeof(AES128Key)));
 }
 
 void test_l2()
@@ -65,9 +72,11 @@ void test_l2()
         XLRSConnection conn(static_cast<RadioDelegate *>(&radio));
         conn.setSK(test_pairing_key);
 
-        uint8_t buf[256] = {0};
-        TEST_ASSERT_EQUAL(strlen("Hello"), conn.receiveL2Message(buf, 256));
-        TEST_ASSERT_EQUAL(0, strcmp((const char *)buf, "Hello")); });
+        uint8_t buf[255] = {0};
+        size_t len = sizeof(buf);
+        TEST_ASSERT_TRUE(conn.receiveL2Message(buf, &len));
+        TEST_ASSERT_EQUAL(0, strcmp((const char *)buf, "Hello"));
+        });
     t_req.wait();
     t_res.wait();
 }
@@ -81,7 +90,9 @@ void test_connect_and_then_send()
         conn.init(test_pairing_key);
 
         TEST_ASSERT_TRUE(conn.requestConnect());
-        conn.sendL2Message((const uint8_t *)"Hello", strlen("Hello")); });
+
+        conn.sendL2Message((const uint8_t *)"Hello", strlen("Hello"));
+        });
     auto t_res = std::async([]()
                             {
         MockRadioDelegate radio(true);
@@ -89,9 +100,12 @@ void test_connect_and_then_send()
         conn.init(test_pairing_key);
 
         TEST_ASSERT_TRUE(conn.respondConnect());
-        uint8_t buf[256] = {0};
-        TEST_ASSERT_EQUAL(strlen("Hello"), conn.receiveL2Message(buf, 256));
-        TEST_ASSERT_EQUAL(0, strcmp((const char *)buf, "Hello")); });
+
+        uint8_t buf[255] = {0};
+        size_t len = sizeof(buf);
+        TEST_ASSERT_TRUE(conn.receiveL2Message(buf, &len));
+        TEST_ASSERT_EQUAL(0, strcmp((const char *)buf, "Hello"));
+        });
 
     t_res.wait();
     t_req.wait();
@@ -100,11 +114,13 @@ void test_connect_and_then_send()
 int main(int argc, char **argv)
 {
     UNITY_BEGIN();
-    RUN_TEST(test_queue);
-    RUN_TEST(test_mbedtls_works);
     RUN_TEST(test_connect);
     RUN_TEST(test_l2);
+    
     RUN_TEST(test_connect_and_then_send);
+    
+    RUN_TEST(test_queue);
+    RUN_TEST(test_mbedtls_works);
     UNITY_END();
 
     return 0;

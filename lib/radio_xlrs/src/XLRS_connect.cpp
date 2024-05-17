@@ -129,11 +129,6 @@ namespace radio::xlrs
             return false;
         }
 
-        // FIXME: we need to combine phase1 and phase2, since phase1 could be spoofed by replay. Because of this, the protocol
-        // is susceptible to denial of service, because an attacker could just spam spoofed responses in phase1, which would
-        // deny the receiver for 2s, making connection success unlikely.
-        // The same exploit does not work on the TX side, however, since the TX can immediately discard such packets in phase1,
-        // as they cannot contain it's nonce. At worst, spurious transmissions are generated, which should at worst delay the exchange.
         bool success_phase2 = false;
         LOOP_TIMEOUT(2000)
         {
@@ -179,7 +174,7 @@ namespace radio::xlrs
         {
             signals->connectionStateChanged(*this);
         }
-        memcpy(sessionKey, nonce1_sk, sizeof(nonce1_sk));
+        memcpy(sessionKey, nonce1_sk, sizeof(sessionKey));
         return true;
     }
 
@@ -200,77 +195,62 @@ namespace radio::xlrs
         mbedtls_aes_setkey_dec(&ctx_dec, pairingKey, 128);
 
         SConnectionHello1 hello1{};
-        bool success_phase1 = false;
+        bool success_exchange = false;
         LOOP_TIMEOUT(2000)
         {
-            // Phase 1: receive hello1
-            unsigned char hello1_enc[sizeof(SConnectionHello1)];
-            if (radio->receivePacket(hello1_enc, sizeof(hello1_enc), 100) != sizeof(hello1_enc))
-            {
-                success_phase1 = false;
-                continue;
-            }
-            unsigned char hello1_iv[16] = {0};
-            mbedtls_aes_crypt_cbc(&ctx_dec, MBEDTLS_AES_DECRYPT, sizeof(hello1), hello1_iv, hello1_enc, (unsigned char *)&hello1);
-            if (mbedtls_ct_memcmp(hello1.tag, "H1 XLRS", 8) != 0)
-            {
-                success_phase1 = false;
-                continue;
-            }
+            unsigned char response[sizeof(SConnectionHello1)];
+            size_t len = radio->receivePacket(response, sizeof(response), 100);
 
-            // Phase 1/2: send response
-            SConnectionResponse response1{};
-            memcpy(response1.nonce1_sk, hello1.nonce1_sk, sizeof(response1.nonce1_sk));
-            memcpy(response1.nonce2, nonce2, sizeof(response1.nonce2));
-            unsigned char response1_enc[sizeof(SConnectionResponse)];
-            unsigned char response1_iv[16] = {0};
-            mbedtls_aes_crypt_cbc(&ctx_enc, MBEDTLS_AES_ENCRYPT, sizeof(response1), response1_iv, (const unsigned char *)&response1, response1_enc);
-            radio->sendPacket(response1_enc, sizeof(response1_enc));
+            if (len == sizeof(SConnectionHello1)) {
+                // Phase 1: receive hello1
+                unsigned char hello1_iv[16] = {0};
+                mbedtls_aes_crypt_cbc(&ctx_dec, MBEDTLS_AES_DECRYPT, sizeof(hello1), hello1_iv, response, (unsigned char *)&hello1);
+                if (mbedtls_ct_memcmp(hello1.tag, "H1 XLRS", 8) != 0)
+                {
+                    success_exchange = false;
+                    continue;
+                }
 
-            success_phase1 = true;
-            break;
+                // Phase 1/2: send response
+                SConnectionResponse response1{};
+                memcpy(response1.nonce1_sk, hello1.nonce1_sk, sizeof(response1.nonce1_sk));
+                memcpy(response1.nonce2, nonce2, sizeof(response1.nonce2));
+                unsigned char response1_enc[sizeof(SConnectionResponse)];
+                unsigned char response1_iv[16] = {0};
+                mbedtls_aes_crypt_cbc(&ctx_enc, MBEDTLS_AES_ENCRYPT, sizeof(response1), response1_iv, (const unsigned char *)&response1, response1_enc);
+                radio->sendPacket(response1_enc, sizeof(response1_enc));
+            } else if (len == sizeof (SConnectionHello2)) {
+                // Phase 2: receive Hello2
+                SConnectionHello2 hello2{};
+                static_assert(sizeof(hello2) == 16);
+                mbedtls_aes_crypt_ecb(&ctx_dec, MBEDTLS_AES_DECRYPT, response, (unsigned char *)&hello2);
+                if (mbedtls_ct_memcmp(hello2.nonce2, nonce2, sizeof(nonce2)) != 0)
+                {
+                    continue;
+                }
+
+                // Phase 2/2: send ACK2
+                AES128Key nonce1_xor_2;
+                for (int i = 0; i < sizeof(nonce1_xor_2); i++)
+                {
+                    nonce1_xor_2[i] = hello1.nonce1_sk[i] ^ nonce2[i];
+                }
+                SConnectionACK2 ack2{};
+                memcpy(ack2.nonce1_xor_2, nonce1_xor_2, sizeof(nonce1_xor_2));
+                static_assert(sizeof(ack2) == 16);
+                unsigned char ack2_enc[sizeof(SConnectionACK2)];
+                mbedtls_aes_crypt_ecb(&ctx_enc, MBEDTLS_AES_ENCRYPT, (const unsigned char *)&ack2, ack2_enc);
+
+                radio->sendPacket(ack2_enc, sizeof(ack2_enc));
+                // FIXME: send multiple packets (this breaks the tests, because we can't distinguish corruption from outdated packets in the suite yet...)
+                // radio->sendPacket(ack2_enc, sizeof(ack2_enc));
+                // radio->sendPacket(ack2_enc, sizeof(ack2_enc));
+
+                success_exchange = true;
+                break;
+            }
         }
-        if (!success_phase1)
-        {
-            return false;
-        }
-
-        bool success_phase2 = false;
-        LOOP_TIMEOUT(2000)
-        {
-            // Phase 2: receive Hello2
-            SConnectionHello2 hello2{};
-            unsigned char hello2_enc[sizeof(SConnectionHello2)];
-            if (radio->receivePacket(hello2_enc, sizeof(hello2_enc), 100) != sizeof(hello2_enc))
-            {
-                success_phase2 = false;
-                continue;
-            }
-            static_assert(sizeof(hello2) == 16);
-            mbedtls_aes_crypt_ecb(&ctx_dec, MBEDTLS_AES_DECRYPT, hello2_enc, (unsigned char *)&hello2);
-            if (mbedtls_ct_memcmp(hello2.nonce2, nonce2, sizeof(nonce2)) != 0)
-            {
-                success_phase2 = false;
-                continue;
-            }
-
-            // Phase 2/2: send ACK2
-            AES128Key nonce1_xor_2;
-            for (int i = 0; i < sizeof(nonce1_xor_2); i++)
-            {
-                nonce1_xor_2[i] = hello1.nonce1_sk[i] ^ nonce2[i];
-            }
-            SConnectionACK2 ack2{};
-            memcpy(ack2.nonce1_xor_2, nonce1_xor_2, sizeof(nonce1_xor_2));
-            static_assert(sizeof(ack2) == 16);
-            unsigned char ack2_enc[sizeof(SConnectionACK2)];
-            mbedtls_aes_crypt_ecb(&ctx_enc, MBEDTLS_AES_ENCRYPT, (const unsigned char *)&ack2, ack2_enc);
-            radio->sendPacket(ack2_enc, sizeof(ack2_enc));
-
-            success_phase2 = true;
-            break;
-        }
-        if (!success_phase2)
+        if (!success_exchange)
         {
             return false;
         }
@@ -280,7 +260,7 @@ namespace radio::xlrs
         {
             signals->connectionStateChanged(*this);
         }
-        memcpy(sessionKey, hello1.nonce1_sk, sizeof(hello1.nonce1_sk));
+        memcpy(sessionKey, hello1.nonce1_sk, sizeof(sessionKey));
         return true;
     }
 }

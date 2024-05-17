@@ -51,12 +51,12 @@ namespace radio::xlrs
     }
 
     // FIXME: think trough how to handle failure
-    ssize_t XLRSConnection::receiveL2Message(uint8_t buf[], size_t length)
+    bool XLRSConnection::receiveL2Message(uint8_t buf[], size_t *length)
     {
-        const size_t rx_length = radio->receivePacket(buf, length, 100);
+        const size_t rx_length = radio->receivePacket(buf, *length, 100);
         if (rx_length < sizeof(L2Header) + 1)
         {
-            return -1;
+            return false;
         }
         const size_t ciphertext_length = rx_length - sizeof(L2Header);
         const size_t ciphertext_with_nonce_length = ciphertext_length + sizeof(L2Header::nonce);
@@ -65,7 +65,7 @@ namespace radio::xlrs
         memcpy(&header, buf, sizeof(header));
         if (header.nonce < next_nonce)
         {
-            return -2;
+            return false;
         }
         next_nonce += (ciphertext_length + 15) / 16;
 
@@ -77,7 +77,7 @@ namespace radio::xlrs
 
         if (mbedtls_ct_memcmp(cmac_buf + 12, &header.mic, sizeof(header.mic)) != 0)
         {
-            return -3;
+            return false;
         }
 
         MbedtlsAesContext ctx_enc;
@@ -88,6 +88,7 @@ namespace radio::xlrs
         unsigned char nonce_bytes[16] = {0};
         mbedtls_aes_crypt_ctr(&ctx_enc, ciphertext_length, &offset, nonce_bytes, stream_block, ciphertext, buf);
 
-        return ciphertext_length;
+        *length = ciphertext_length;
+        return true;
     }
 }

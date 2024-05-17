@@ -8,6 +8,7 @@ extern "C"
 #include "lora/radiohal.hpp"
 #include "lora/llcc68.hpp"
 #include "lora/esp_idf.hpp"
+#include "uart.hpp"
 
 using namespace radiohal;
 
@@ -70,7 +71,7 @@ void llcc68_tx_thread(void *arg)
     }
 }
 
-void ws2812_thread(void *arg)
+[[noreturn]] void ws2812_thread(void *arg)
 {
     static DMA_ATTR uint8_t my_ws2812_buffer[WS2812_DMA_SIZE(10)];
 
@@ -103,10 +104,8 @@ extern "C" void app_main()
     assert(radio.reset_init() == radiohal::OK);
     assert(radio.configurePhy(PhyConfig{}) == radiohal::OK);
 
-    // TaskHandle_t led_thread_h;
-    // xTaskCreate(ws2812_thread, "ws2812_thread", 8000, NULL, tskIDLE_PRIORITY, &led_thread_h);
+    TaskHandle_t uartThreadH;
+    xTaskCreate([](void *) { uart_thread(); }, "uart", 8000, NULL, tskIDLE_PRIORITY, &uartThreadH);
 
     llcc68_tx_thread(&radio);
-    // TaskHandle_t tx_thread_h;
-    // xTaskCreate(llcc68_tx_thread, "llcc68_tx", 8000, &radio, tskIDLE_PRIORITY, &tx_thread_h);
 }
